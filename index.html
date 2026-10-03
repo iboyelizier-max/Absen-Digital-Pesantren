@@ -783,12 +783,71 @@
             }
 
             let teachers = [];
-            if (selectedPengasuhTheme === 'KAJIAN_IHYA') {
-                teachers = db.teachers.filter(t => t.theme === 'KAJIAN_IHYA_PAGI' || t.theme === 'KAJIAN_IHYA_SORE');
-            } else {
-                teachers = db.teachers.filter(t => t.theme === selectedPengasuhTheme);
-            }
-            const labelItem = selectedPengasuhTheme === 'SOROGAN' ? 'Tutor' : selectedPengasuhTheme === 'JAM_BELAJAR' ? 'Guru' : 'Kajian';
+
+if (selectedPengasuhTheme === 'KAJIAN_IHYA') {
+    teachers = db.teachers.filter(
+        t => t.theme === 'KAJIAN_IHYA_PAGI' || t.theme === 'KAJIAN_IHYA_SORE'
+    );
+} else {
+    teachers = db.teachers.filter(
+        t => t.theme === selectedPengasuhTheme
+    );
+}
+
+// Urutan khusus Tutor/Guru berdasarkan jenjang/kelas
+if (selectedPengasuhTheme === 'SOROGAN') {
+    const soroganOrder = {
+        'Awwaluma': 1,
+        'Sulam Munajat': 2,
+        'Sullam Munajat': 2,
+        'Mukhtashar': 3,
+        'Ta’limul Muta’allim': 4,
+        "Ta'limul Muta'allim": 4
+    };
+
+    teachers.sort((a, b) => {
+        const orderA = soroganOrder[a.detailLevel] || 999;
+        const orderB = soroganOrder[b.detailLevel] || 999;
+
+        if (orderA !== orderB) {
+            return orderA - orderB;
+        }
+
+        return (a.name || '').localeCompare(b.name || '');
+    });
+}
+
+if (selectedPengasuhTheme === 'JAM_BELAJAR') {
+    const jamBelajarOrder = {
+        'Kelas 1 Ibtida’iyah': 1,
+        'Kelas 2 Ibtida’iyah': 2,
+        'Kelas 3 Ibtida’iyah': 3,
+        'Kelas 4 Ibtida’iyah': 4,
+        'Kelas 5 Ibtida’iyah': 5,
+        'Kelas 6 Ibtida’iyah': 6,
+        '1 Tsanawiyah': 7,
+        '2 Tsanawiyah': 8,
+        '3 Tsanawiyah': 9
+    };
+
+    teachers.sort((a, b) => {
+        const orderA = jamBelajarOrder[a.detailLevel] || 999;
+        const orderB = jamBelajarOrder[b.detailLevel] || 999;
+
+        if (orderA !== orderB) {
+            return orderA - orderB;
+        }
+
+        return (a.name || '').localeCompare(b.name || '');
+    });
+}
+
+const labelItem =
+    selectedPengasuhTheme === 'SOROGAN'
+        ? 'Tutor'
+        : selectedPengasuhTheme === 'JAM_BELAJAR'
+            ? 'Guru'
+            : 'Kajian';
 
             if (teachers.length === 0) {
                 return `
@@ -1023,20 +1082,174 @@
             document.body.removeChild(link);
             showToast("File Excel (CSV) berhasil diunduh!");
         }
+        // --- HAPUS DATA ABSENSI BERDASARKAN BULAN ---
+async function deleteAttendanceByMonth(phone, theme, month) {
+    if (!month) {
+        showToast("Silakan pilih bulan terlebih dahulu.", "error");
+        return;
+    }
+
+    const db = getDB();
+
+    // Ambil hanya data absensi milik guru/kajian dan bulan yang dipilih
+    const logsToDelete = db.attendance.filter(a =>
+        a.teacherPhone === phone &&
+        a.theme === theme &&
+        typeof a.date === 'string' &&
+        a.date.startsWith(month)
+    );
+
+    if (logsToDelete.length === 0) {
+        showToast("Tidak ada data absensi pada bulan tersebut.", "error");
+        return;
+    }
+
+    const [year, monthNumber] = month.split('-');
+
+    const monthsIndo = [
+        'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+        'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+    ];
+
+    const monthName = monthsIndo[parseInt(monthNumber, 10) - 1];
+
+    const confirmed = confirm(
+        `Apakah Anda yakin ingin menghapus seluruh data absensi pada bulan ${monthName} ${year}?\n\n` +
+        `${logsToDelete.length} data absensi akan dihapus dari database Firebase.\n\n` +
+        `Data santri dan data guru TIDAK akan dihapus.`
+    );
+
+    if (!confirmed) return;
+
+    try {
+        // Firestore membatasi maksimal 500 operasi dalam satu batch.
+        // Karena itu data dipecah menjadi beberapa batch.
+        const chunkSize = 450;
+
+        for (let i = 0; i < logsToDelete.length; i += chunkSize) {
+            const chunk = logsToDelete.slice(i, i + chunkSize);
+            const batch = firestore.batch();
+
+            chunk.forEach(log => {
+                batch.delete(
+                    firestore.collection('attendance').doc(log.id)
+                );
+            });
+
+            await batch.commit();
+        }
+
+        // Hapus juga dari data lokal aplikasi
+        db.attendance = db.attendance.filter(a =>
+            !(
+                a.teacherPhone === phone &&
+                a.theme === theme &&
+                typeof a.date === 'string' &&
+                a.date.startsWith(month)
+            )
+        );
+
+        cloudDB = db;
+        lastSyncedDB = cloneDB(db);
+        saveLocalCache(db);
+
+        showToast(`Data absensi bulan ${monthName} ${year} berhasil dihapus.`);
+
+        render();
+
+    } catch (error) {
+        console.error("Gagal menghapus data absensi bulanan:", error);
+        showToast("Gagal menghapus data dari Firebase.", "error");
+    }
+}
 
         // --- 5. RESET ASUHAN AMAN ---
-        function confirmResetAsuhan(phone, theme, asuhanName) {
-            if (confirm(`Apakah Anda yakin ingin mereset data pada kategori ${theme}?\n\nSemua data peserta dan absensi untuk kategori ini akan dihapus.`)) {
-                const db = getDB();
-                db.teachers = db.teachers.filter(t => !(t.phone === phone && t.theme === theme));
-                db.students = db.students.filter(s => !(s.teacherPhone === phone && s.theme === theme));
-                db.attendance = db.attendance.filter(a => !(a.teacherPhone === phone && a.theme === theme));
+        async function confirmResetAsuhan(phone, theme, asuhanName) {
+    if (!confirm(`Apakah Anda yakin ingin mereset data pada kategori ${theme}?\n\nSemua data peserta dan absensi untuk kategori ini akan dihapus.`)) {
+        return;
+    }
 
-                saveDB(db);
-                showToast(`Data (${theme}) berhasil di-reset!`);
-                render();
-            }
+    const db = getDB();
+
+    const teachersToDelete = db.teachers.filter(
+        t => t.phone === phone && t.theme === theme
+    );
+
+    const studentsToDelete = db.students.filter(
+        s => s.teacherPhone === phone && s.theme === theme
+    );
+
+    const attendanceToDelete = db.attendance.filter(
+        a => a.teacherPhone === phone && a.theme === theme
+    );
+
+    try {
+        // Firestore maksimal 500 operasi dalam satu batch.
+        // Menggunakan 450 agar sama dengan mekanisme
+        // "Hapus Data Bulan Ini".
+        const deleteOperations = [];
+
+        teachersToDelete.forEach(teacher => {
+            deleteOperations.push({
+                collection: 'teachers',
+                id: `${teacher.phone}__${teacher.theme}`
+            });
+        });
+
+        studentsToDelete.forEach(student => {
+            deleteOperations.push({
+                collection: 'students',
+                id: student.id
+            });
+        });
+
+        attendanceToDelete.forEach(attendance => {
+            deleteOperations.push({
+                collection: 'attendance',
+                id: attendance.id
+            });
+        });
+
+        const chunkSize = 450;
+
+        for (let i = 0; i < deleteOperations.length; i += chunkSize) {
+            const chunk = deleteOperations.slice(i, i + chunkSize);
+            const batch = firestore.batch();
+
+            chunk.forEach(item => {
+                batch.delete(
+                    firestore.collection(item.collection).doc(item.id)
+                );
+            });
+
+            await batch.commit();
         }
+
+        // Hapus juga dari data lokal aplikasi
+        db.teachers = db.teachers.filter(
+            t => !(t.phone === phone && t.theme === theme)
+        );
+
+        db.students = db.students.filter(
+            s => !(s.teacherPhone === phone && s.theme === theme)
+        );
+
+        db.attendance = db.attendance.filter(
+            a => !(a.teacherPhone === phone && a.theme === theme)
+        );
+
+        cloudDB = db;
+        lastSyncedDB = cloneDB(db);
+        saveLocalCache(db);
+
+        showToast(`Data (${theme}) berhasil di-reset!`);
+        render();
+
+    } catch (error) {
+        console.error("Gagal mereset data:", error);
+        showToast("Gagal menghapus data dari Firebase.", "error");
+    }
+}
 
         // --- MODAL HANDLERS FOR STUDENT DETAIL ---
         let currentModalStudentId = null;
@@ -1379,9 +1592,28 @@
 
                 <div class="max-w-6xl w-full mx-auto p-4 md:p-6 space-y-6 flex-grow">
                     <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-                        <div class="p-5 border-b border-slate-100 flex justify-between items-center">
-                            <h3 class="font-bold text-slate-800"><i class="fa-solid fa-table text-emerald-600 mr-2"></i>Tabel Rekap Kehadiran</h3>
-                        </div>
+                        <div class="p-5 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+    <h3 class="font-bold text-slate-800">
+        <i class="fa-solid fa-table text-emerald-600 mr-2"></i>Tabel Rekap Kehadiran
+    </h3>
+
+    <div class="flex flex-wrap items-center gap-2">
+        <input
+            type="month"
+            id="rekap-month-delete"
+            value="${new Date().toISOString().slice(0, 7)}"
+            class="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+        >
+
+        <button
+            onclick="deleteAttendanceByMonth('${currentUser.phone}', '${currentUser.theme}', document.getElementById('rekap-month-delete').value)"
+            class="px-3 py-2 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 text-xs font-semibold rounded-xl transition-all flex items-center space-x-1.5"
+        >
+            <i class="fa-solid fa-trash-can"></i>
+            <span>Hapus Data Bulan Ini</span>
+        </button>
+    </div>
+</div>
                         <div class="overflow-x-auto">
                             <table class="w-full text-left border-collapse text-xs">
                                 <thead>
